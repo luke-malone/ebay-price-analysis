@@ -47,3 +47,6 @@ python main.py --upload
 This uploads an immutable report to `gs://BUCKET/analysis/TIMESTAMP/` and
 replaces `gs://BUCKET/analysis/latest/mad_analysis.json`. Uploading is opt-in;
 without `--upload`, the program only reads GCS and writes locally to mad_analysis.json :)
+
+## Future 
+Developing user interface to search for undervalued listings depending on user criteria (model, colour, storage, discount from MAD mean price)...
