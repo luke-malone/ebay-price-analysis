@@ -35,7 +35,21 @@ class MadTests(unittest.TestCase):
         self.assertEqual(result["median_price"], 102.0)
         self.assertEqual(result["mad"], 2.0)
         self.assertEqual(result["outlier_count"], 1)
-        self.assertEqual(result["robust_market_price_estimate"], 101.0)
+        self.assertEqual(result["market_price_estimate"], 101.0)
+
+    def test_market_estimate_is_mean_after_outlier_removal(self) -> None:
+        observations = [
+            {
+                "item_id": str(index), "title": "phone", "price_numeric": price,
+                "snapshot_timestamp": "2026-01-01T00-00-00Z", "model": "iPhone test",
+                "storage_gb": "128", "condition_category": "used",
+            }
+            for index, price in enumerate([100.0, 100.0, 104.0, 1000.0])
+        ]
+        result = analyse_groups(
+            observations, 4, 3.5, ("model", "storage_gb", "condition_category")
+        )[0]
+        self.assertAlmostEqual(result["market_price_estimate"], 101.33333333333333)
 
     def test_price_levels_use_requested_dimensions(self) -> None:
         observations = [

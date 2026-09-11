@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
-from statistics import median
+from statistics import fmean, median
 from typing import Any
 
 from src.mad import median_absolute_deviation, modified_z_score
@@ -71,8 +71,8 @@ def analyse_groups(
                 "mad": mad,
                 "modified_z_threshold": z_threshold,
                 "outlier_count": sum(row["is_outlier"] for row in listings),
-                "robust_market_price_estimate": (
-                    float(median(non_outlier_prices)) if non_outlier_prices else None
+                "market_price_estimate": (
+                    float(fmean(non_outlier_prices)) if non_outlier_prices else None
                 ),
                 "listings": listings,
             }
@@ -103,7 +103,7 @@ def build_report(
             "median": "median(price)",
             "mad": "median(abs(price - median(price)))",
             "modified_z_score": "0.6745 * (price - median) / MAD, when MAD > 0",
-            "market_price_note": "A robust sample estimate, not a true market price.",
+            "market_price_note": "Arithmetic mean after MAD outliers are removed; not a true market price.",
             "min_sample_size": min_sample_size,
             "modified_z_threshold": z_threshold,
         },
