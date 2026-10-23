@@ -8,6 +8,7 @@ from datetime import datetime
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from google.oauth2.service_account import Credentials
 
 from src.load_data import DEFAULT_BUCKET, list_price_eligible_snapshots, load_price_eligible_snapshots
 
@@ -18,13 +19,14 @@ st.caption("Explore scraped listings, compare models, and identify potential bar
 with st.sidebar:
     st.header("Data source")
     bucket_name = st.text_input("Google Cloud Storage bucket", value=os.getenv("EBAY_BUCKET", DEFAULT_BUCKET))
-    st.caption("Reads price-eligible snapshots using Google Cloud Application Default Credentials.")
+    st.caption("Locally uses Google Cloud Application Default Credentials; hosted deployments can use Streamlit secrets.")
     refresh = st.button("Refresh data", use_container_width=True)
 
 @st.cache_data(ttl=300, show_spinner="Loading listing snapshots from Google Cloud Storage…")
-def get_data(bucket: str, refresh_token: int = 0) -> tuple[pd.DataFrame, int]:
-    snapshots = list_price_eligible_snapshots(bucket)
-    records = load_price_eligible_snapshots(bucket, snapshots)
+def get_data(bucket: str, refresh_token: int = 0, credentials_info: dict | None = None) -> tuple[pd.DataFrame, int]:
+    credentials = Credentials.from_service_account_info(credentials_info) if credentials_info else None
+    snapshots = list_price_eligible_snapshots(bucket, credentials_override=credentials)
+    records = load_price_eligible_snapshots(bucket, snapshots, credentials_override=credentials)
     frame = pd.DataFrame(records)
     if frame.empty:
         return frame, len(snapshots)
@@ -42,7 +44,11 @@ def get_data(bucket: str, refresh_token: int = 0) -> tuple[pd.DataFrame, int]:
 
 try:
     token = int(datetime.utcnow().timestamp()) if refresh else 0
-    data, snapshot_count = get_data(bucket_name.strip(), token)
+    try:
+        credentials_info = dict(st.secrets["gcp_service_account"])
+    except Exception:
+        credentials_info = None
+    data, snapshot_count = get_data(bucket_name.strip(), token, credentials_info)
 except Exception as exc:
     st.error("Could not load the scraper data.")
     st.markdown(
