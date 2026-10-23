@@ -71,14 +71,18 @@ def choices(frame: pd.DataFrame, field: str) -> list[str]:
     return sorted(frame[field].dropna().astype(str).unique().tolist())
 
 
+MIN_PLAUSIBLE_IPHONE_PRICE = 20.00  # GBP; excludes obvious parsing/classification errors such as £0.09 listings
+
+
 def add_mad_flags(frame: pd.DataFrame) -> pd.DataFrame:
-    """Flag price outliers using the same modified-z-score MAD rule across the app."""
+    """Flag MAD outliers and implausibly cheap listings using one shared rule."""
     result = frame.copy()
     group_cols = [c for c in ("model", "storage_gb", "condition_category") if c in result.columns]
     if result.empty:
         result["group_median"] = pd.Series(dtype=float)
         result["mad"] = pd.Series(dtype=float)
         result["modified_z"] = pd.Series(dtype=float)
+        result["price_below_floor"] = pd.Series(dtype=bool)
         result["is_anomaly"] = pd.Series(dtype=bool)
         return result
 
@@ -90,8 +94,9 @@ def add_mad_flags(frame: pd.DataFrame) -> pd.DataFrame:
     ).transform("median")
     result["modified_z"] = abs_dev / (1.4826 * result["mad"].replace(0, float("nan")))
     zero_mad = result["mad"].eq(0) & abs_dev.gt(0)
-    result["is_anomaly"] = result["modified_z"].gt(3.5) | zero_mad
-    result.loc[zero_mad, "modified_z"] = float("inf")
+    result["price_below_floor"] = result["price_numeric"].lt(MIN_PLAUSIBLE_IPHONE_PRICE)
+    result["is_anomaly"] = result["modified_z"].gt(3.5) | zero_mad | result["price_below_floor"]
+    result.loc[zero_mad | result["price_below_floor"], "modified_z"] = float("inf")
     result["modified_z"] = result["modified_z"].fillna(0)
     return result
 
@@ -267,7 +272,7 @@ with tab_anomalies:
         title="Price distribution: typical observations versus MAD flags",
         labels={"price_numeric": "Asking price (£)", "is_anomaly": "MAD outlier"})
     st.plotly_chart(anomaly_fig, use_container_width=True)
-    st.caption("Modified z-score uses median absolute deviation within model/storage/condition groups; values above 3.5 are flagged. Zero-MAD groups flag prices differing from the median. Flags are prompts for inspection, not automatic exclusions.")
+    st.caption(f"Flags include modified z-score > 3.5 within model/storage/condition groups, prices differing from the median in zero-MAD groups, and prices below £{MIN_PLAUSIBLE_IPHONE_PRICE:.2f}. The Deal Finder excludes all flagged listings; the Anomaly Explorer retains them for inspection.")
     only_flagged = st.checkbox("Show only flagged prices", value=True)
     anomaly_view = anomaly_data[anomaly_data["is_anomaly"]] if only_flagged else anomaly_data
     anomaly_cols = [c for c in ("model", "storage_gb", "condition_category", "price_numeric", "group_median",
