@@ -70,6 +70,31 @@ model_data = data[data["model"].isin(selected_models)]
 def choices(frame: pd.DataFrame, field: str) -> list[str]:
     return sorted(frame[field].dropna().astype(str).unique().tolist())
 
+
+def add_mad_flags(frame: pd.DataFrame) -> pd.DataFrame:
+    """Flag price outliers using the same modified-z-score MAD rule across the app."""
+    result = frame.copy()
+    group_cols = [c for c in ("model", "storage_gb", "condition_category") if c in result.columns]
+    if result.empty:
+        result["group_median"] = pd.Series(dtype=float)
+        result["mad"] = pd.Series(dtype=float)
+        result["modified_z"] = pd.Series(dtype=float)
+        result["is_anomaly"] = pd.Series(dtype=bool)
+        return result
+
+    grouped_prices = result.groupby(group_cols, dropna=False)["price_numeric"]
+    result["group_median"] = grouped_prices.transform("median")
+    abs_dev = (result["price_numeric"] - result["group_median"]).abs()
+    result["mad"] = abs_dev.groupby(
+        [result[c] for c in group_cols], dropna=False
+    ).transform("median")
+    result["modified_z"] = abs_dev / (1.4826 * result["mad"].replace(0, float("nan")))
+    zero_mad = result["mad"].eq(0) & abs_dev.gt(0)
+    result["is_anomaly"] = result["modified_z"].gt(3.5) | zero_mad
+    result.loc[zero_mad, "modified_z"] = float("inf")
+    result["modified_z"] = result["modified_z"].fillna(0)
+    return result
+
 storages = choices(model_data, "storage_gb")
 selected_storage = st.sidebar.multiselect("Storage", storages, default=storages)
 storage_data = model_data[model_data["storage_gb"].isin(selected_storage)]
@@ -107,7 +132,7 @@ if filtered.empty:
     st.info("No listings match these filters. Widen the filters in the sidebar.")
     st.stop()
 
-tab_overview, tab_prices, tab_listings, tab_deals, tab_trends, tab_anomalies = st.tabs(["Overview", "Price analysis", "Listings", "Deal finder", "Market trends", "Anomaly explorer"])
+tab_overview, tab_prices, tab_listings, tab_deals, tab_anomalies = st.tabs(["Overview", "Price analysis", "Listings", "Deal finder", "Anomaly explorer"])
 with tab_overview:
     left, right = st.columns(2)
     with left:
@@ -122,14 +147,6 @@ with tab_overview:
         model_fig = px.bar(model_summary, x="model", y="listings", title="Unique listings by iPhone model",
                            labels={"model": "Model", "listings": "Unique listings"})
         st.plotly_chart(model_fig, use_container_width=True)
-    if "snapshot_timestamp" in filtered and filtered["snapshot_timestamp"].notna().any():
-        history = filtered.dropna(subset=["snapshot_timestamp"]).groupby("snapshot_timestamp", as_index=False).agg(
-            median_price=("price_numeric", "median"), observations=("item_id", "size")
-        ).sort_values("snapshot_timestamp")
-        history_fig = px.line(history, x="snapshot_timestamp", y="median_price", markers=True,
-                              title="Median asking price per snapshot",
-                              labels={"snapshot_timestamp": "Snapshot time", "median_price": "Median price (£)"})
-        st.plotly_chart(history_fig, use_container_width=True)
 
 with tab_prices:
     st.subheader("Compare prices by model and storage")
@@ -173,7 +190,10 @@ with tab_listings:
 with tab_deals:
     st.subheader("Find potentially underpriced listings")
     st.caption("Compares each item's latest asking price with similar model, storage, and condition listings in the current selection.")
-    deal_base = latest_items.copy()
+    # Exclude the same MAD-flagged observations used by the Anomaly Explorer.
+    deal_candidates = add_mad_flags(latest_items)
+    mad_excluded_count = int(deal_candidates["is_anomaly"].sum())
+    deal_base = deal_candidates[~deal_candidates["is_anomaly"]].copy()
     compare_fields = [c for c in ("model", "storage_gb", "condition_category") if c in deal_base.columns]
     compare_stats = deal_base.groupby(compare_fields, dropna=False).agg(
         market_median=("price_numeric", "median"), comparable_count=("item_id", "nunique")
@@ -181,10 +201,11 @@ with tab_deals:
     deals = deal_base.merge(compare_stats, on=compare_fields, how="left")
     deals["discount_pct"] = (deals["market_median"] - deals["price_numeric"]) / deals["market_median"] * 100
     deals["potential_deal"] = (deals["discount_pct"] >= 10) & (deals["comparable_count"] >= 3)
-    d1, d2, d3 = st.columns(3)
+    d1, d2, d3, d4 = st.columns(4)
     d1.metric("Potential deals", f"{int(deals['potential_deal'].sum()):,}")
-    d2.metric("Best observed discount", f"{deals['discount_pct'].max():.1f}%" if not deals.empty else "—")
+    d2.metric("Best non-outlier discount", f"{deals['discount_pct'].max():.1f}%" if not deals.empty else "—")
     d3.metric("Discount threshold", "10%")
+    d4.metric("MAD outliers excluded", f"{mad_excluded_count:,}")
     deal_fig = px.scatter(
         deals, x="price_numeric", y="discount_pct", color="model", symbol="condition_category",
         hover_name="title",
@@ -215,31 +236,6 @@ with tab_deals:
             "Item URL": st.column_config.LinkColumn(display_text="Open listing")})
     st.caption("A discount is a screening signal, not proof of a bargain. Check condition, seller, postage, and listing details.")
 
-with tab_trends:
-    st.subheader("Price history and market inventory")
-    if "snapshot_timestamp" in filtered.columns and filtered["snapshot_timestamp"].notna().any():
-        available_models = sorted(filtered["model"].unique().tolist())
-        trend_models = st.multiselect("Models to compare", available_models, default=available_models[:5], key="trend_models")
-        history_frame = filtered[filtered["model"].isin(trend_models)].dropna(subset=["snapshot_timestamp"])
-        history = history_frame.groupby(["snapshot_timestamp", "model"], as_index=False).agg(
-            median_price=("price_numeric", "median"), observations=("item_id", "size")).sort_values("snapshot_timestamp")
-        if not history.empty:
-            trend_fig = px.line(history, x="snapshot_timestamp", y="median_price", color="model", markers=True,
-                title="Median asking price per snapshot",
-                labels={"snapshot_timestamp": "Snapshot time", "median_price": "Median asking price (£)", "model": "Model"},
-                hover_data={"observations": True})
-            st.plotly_chart(trend_fig, use_container_width=True)
-            st.caption("Snapshots show prices observed at collection times; they do not necessarily represent the price history of a single item.")
-    else:
-        st.info("No valid snapshot timestamps are available for this selection.")
-
-    inventory = latest_items.groupby(["model", "storage_gb"], as_index=False).agg(
-        listings=("item_id", "nunique"), median_price=("price_numeric", "median"))
-    tree_fig = px.treemap(inventory, path=["model", "storage_gb"], values="listings", color="median_price",
-        color_continuous_scale="Viridis", title="Inventory treemap: size = listings, colour = median price",
-        hover_data={"listings": True, "median_price": ":.2f"},
-        labels={"listings": "Unique listings", "median_price": "Median asking price (£)", "storage_gb": "Storage"})
-    st.plotly_chart(tree_fig, use_container_width=True)
 
 with tab_prices:
     st.subheader("Price distribution by model")
@@ -262,17 +258,7 @@ with tab_prices:
 
 with tab_anomalies:
     st.subheader("Anomaly detection explorer")
-    anomaly_data = latest_items.copy()
-    group_cols = [c for c in ("model", "storage_gb", "condition_category") if c in anomaly_data.columns]
-    grouped_prices = anomaly_data.groupby(group_cols, dropna=False)["price_numeric"]
-    anomaly_data["group_median"] = grouped_prices.transform("median")
-    abs_dev = (anomaly_data["price_numeric"] - anomaly_data["group_median"]).abs()
-    anomaly_data["mad"] = abs_dev.groupby([anomaly_data[c] for c in group_cols], dropna=False).transform("median")
-    anomaly_data["modified_z"] = abs_dev / (1.4826 * anomaly_data["mad"].replace(0, float("nan")))
-    zero_mad = anomaly_data["mad"].eq(0) & abs_dev.gt(0)
-    anomaly_data["is_anomaly"] = anomaly_data["modified_z"].gt(3.5) | zero_mad
-    anomaly_data.loc[zero_mad, "modified_z"] = float("inf")
-    anomaly_data["modified_z"] = anomaly_data["modified_z"].fillna(0)
+    anomaly_data = add_mad_flags(latest_items)
     a1, a2 = st.columns(2)
     flagged_count = int(anomaly_data["is_anomaly"].sum())
     a1.metric("Unusual prices flagged", f"{flagged_count:,}")
