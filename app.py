@@ -205,23 +205,58 @@ with tab_deals:
     ).reset_index()
     deals = deal_base.merge(compare_stats, on=compare_fields, how="left")
     deals["discount_pct"] = (deals["market_median"] - deals["price_numeric"]) / deals["market_median"] * 100
-    deals["potential_deal"] = (deals["discount_pct"] >= 10) & (deals["comparable_count"] >= 3)
+
+    st.markdown("### Custom deal search")
+    st.caption("Choose what you want to buy. Comparable medians are calculated before applying these search preferences.")
+    search_col1, search_col2 = st.columns(2)
+    available_models = sorted(deals["model"].dropna().astype(str).unique().tolist())
+    available_conditions = sorted(deals["condition_category"].dropna().astype(str).unique().tolist())
+    with search_col1:
+        chosen_model = st.selectbox("Model", ["Any model"] + available_models, key="custom_deal_model")
+        chosen_condition = st.selectbox("Condition", ["Any condition"] + available_conditions, key="custom_deal_condition")
+    with search_col2:
+        budget_cap = max(100.0, float(deals["price_numeric"].max())) if not deals.empty else 100.0
+        default_budget = min(500.0, budget_cap)
+        max_budget = st.number_input(
+            "Maximum asking price (£)", min_value=0.0, max_value=budget_cap,
+            value=default_budget, step=25.0, key="custom_deal_budget"
+        )
+        min_discount = st.slider(
+            "Minimum discount from comparable median (%)", min_value=0, max_value=80,
+            value=10, step=5, key="custom_deal_min_discount"
+        )
+
+    search_results = deals.copy()
+    if chosen_model != "Any model":
+        search_results = search_results[search_results["model"].astype(str) == chosen_model]
+    if chosen_condition != "Any condition":
+        search_results = search_results[search_results["condition_category"].astype(str) == chosen_condition]
+    search_results = search_results[
+        (search_results["price_numeric"] <= max_budget)
+        & (search_results["discount_pct"] >= min_discount)
+        & (search_results["comparable_count"] >= 3)
+    ].sort_values("discount_pct", ascending=False)
+    search_results["potential_deal"] = True
+
     d1, d2, d3, d4 = st.columns(4)
-    d1.metric("Potential deals", f"{int(deals['potential_deal'].sum()):,}")
-    d2.metric("Best non-outlier discount", f"{deals['discount_pct'].max():.1f}%" if not deals.empty else "—")
-    d3.metric("Discount threshold", "10%")
+    d1.metric("Matching deals", f"{len(search_results):,}")
+    d2.metric("Best matching discount", f"{search_results['discount_pct'].max():.1f}%" if not search_results.empty else "—")
+    d3.metric("Minimum discount", f"{min_discount}%")
     d4.metric("MAD outliers excluded", f"{mad_excluded_count:,}")
-    deal_fig = px.scatter(
-        deals, x="price_numeric", y="discount_pct", color="model", symbol="condition_category",
-        hover_name="title",
-        hover_data={"item_id": True, "storage_gb": True, "colour": True, "market_median": ":.2f",
-                    "comparable_count": True, "discount_pct": ":.1f", "price_numeric": ":.2f"},
-        title="Asking price versus discount from comparable median",
-        labels={"price_numeric": "Asking price (£)", "discount_pct": "Discount from comparable median (%)"},
-    )
-    deal_fig.add_hline(y=10, line_dash="dash", annotation_text="10% below median")
-    st.plotly_chart(deal_fig, use_container_width=True)
-    shortlist = deals[deals["potential_deal"]].sort_values("discount_pct", ascending=False)
+    if search_results.empty:
+        st.info("No listings match these preferences. Try increasing your budget or lowering the minimum discount.")
+    else:
+        deal_fig = px.scatter(
+            search_results, x="price_numeric", y="discount_pct", color="model", symbol="condition_category",
+            hover_name="title",
+            hover_data={"item_id": True, "storage_gb": True, "colour": True, "market_median": ":.2f",
+                        "comparable_count": True, "discount_pct": ":.1f", "price_numeric": ":.2f"},
+            title="Your matching listings: asking price versus discount",
+            labels={"price_numeric": "Asking price (£)", "discount_pct": "Discount from comparable median (%)"},
+        )
+        deal_fig.add_hline(y=min_discount, line_dash="dash", annotation_text=f"{min_discount}% minimum discount")
+        st.plotly_chart(deal_fig, use_container_width=True)
+    shortlist = search_results
     st.markdown("**Potential deal shortlist**")
     if shortlist.empty:
         st.info("No listings meet the 10% discount threshold with at least three comparable items.")
