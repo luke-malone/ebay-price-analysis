@@ -7,21 +7,25 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from google.cloud import storage
 import google.auth
+from google.cloud import storage
+from google.oauth2.service_account import Credentials
 
 DEFAULT_BUCKET = "server-413715-iphone-scraper"
 DATA_PREFIX = "data/"
 PRICE_ELIGIBLE_FILE = "price_eligible.json"
-SNAPSHOT_PATTERN = re.compile(r"^data/([^/]+)/price_eligible\\.json$")
+SNAPSHOT_PATTERN = re.compile(r"^data/([^/]+)/price_eligible\.json$")
 
 
-def _storage_client(project: str | None) -> storage.Client:
-    """Create an authenticated client even when ADC lacks a default project.
-
-    Bucket reads below use fully qualified bucket names. The fallback is only a
-    required client identifier; callers may set --project for quota attribution.
-    """
+def _storage_client(
+    project: str | None, credentials_override: Any | None = None
+) -> storage.Client:
+    """Create a storage client using an optional explicit credential override."""
+    if credentials_override is not None:
+        return storage.Client(
+            project=project or getattr(credentials_override, "project_id", None) or "gcs-data-reader",
+            credentials=credentials_override,
+        )
     credentials, detected_project = google.auth.default()
     return storage.Client(
         project=project or detected_project or "gcs-data-reader",
@@ -29,9 +33,11 @@ def _storage_client(project: str | None) -> storage.Client:
     )
 
 
-def list_price_eligible_snapshots(bucket_name: str, project: str | None = None) -> list[str]:
+def list_price_eligible_snapshots(
+    bucket_name: str, project: str | None = None, credentials_override: Any | None = None
+) -> list[str]:
     """Return available scraper snapshot timestamps in chronological order."""
-    client = _storage_client(project)
+    client = _storage_client(project, credentials_override)
     bucket = client.bucket(bucket_name)
     snapshots = {
         match.group(1)
@@ -42,18 +48,21 @@ def list_price_eligible_snapshots(bucket_name: str, project: str | None = None) 
 
 
 def load_price_eligible_snapshots(
-    bucket_name: str, snapshots: Sequence[str] | None = None, project: str | None = None
+    bucket_name: str,
+    snapshots: Sequence[str] | None = None,
+    project: str | None = None,
+    credentials_override: Any | None = None,
 ) -> list[dict[str, Any]]:
-    """Load price-eligible records, adding immutable source snapshot metadata.
-
-    Google Application Default Credentials are discovered by google-cloud-storage;
-    no credentials or keys are read from the repository.
-    """
-    client = _storage_client(project)
+    """Load price-eligible records and attach immutable source snapshot metadata."""
+    client = _storage_client(project, credentials_override)
     bucket = client.bucket(bucket_name)
-    selected = list(snapshots) if snapshots else list_price_eligible_snapshots(bucket_name, project)
+    selected = list(snapshots) if snapshots else list_price_eligible_snapshots(
+        bucket_name, project, credentials_override
+    )
     if not selected:
-        raise ValueError(f"No {PRICE_ELIGIBLE_FILE} files found under gs://{bucket_name}/{DATA_PREFIX}")
+        raise ValueError(
+            f"No {PRICE_ELIGIBLE_FILE} files found under gs://{bucket_name}/{DATA_PREFIX}"
+        )
 
     observations: list[dict[str, Any]] = []
     for timestamp in selected:
