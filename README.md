@@ -59,10 +59,4 @@ streamlit run app.py
 
 The sidebar lets you filter by iPhone model, storage, colour, condition and price, search listing titles or item IDs, and export filtered results to CSV. The dashboard includes price-distribution charts, historical snapshot trends and grouped price comparisons.
 
-### Deploy as a website
 
-You can deploy this public repository using [Streamlit Community Cloud](https://share.streamlit.io/). Choose this repository, the `main` branch and `app.py`.
-
-Because the source bucket is private, configure a Streamlit secret named `gcp_service_account` containing the JSON fields of a dedicated Google Cloud service account. Grant that account **Storage Object Viewer** on the scraper bucket only. Never commit the service-account JSON or put it in the repository. Local use can continue with Application Default Credentials.
-
-The dashboard reads `price_eligible.json` from each timestamped folder under `data/` in the configured bucket. It caches data for five minutes; use **Refresh data** to reload it.
